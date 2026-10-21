@@ -1,98 +1,92 @@
-# 🎯 B2B Hardware Inventory & Fulfillment System
-## The Ultimate DevOps & Full-Stack Interview Cheat Sheet
+# B2B Hardware Inventory and Fulfillment System
+## Interview Preparation Guide
 
-This document is your high-impact study guide. It is structured so you can read it, remember the core concepts, and confidently answer questions from hiring managers and technical recruiters.
+Use this guide to describe the implementation accurately. Add personal context and measured results only when you have verified them yourself.
 
----
+## 1. 30-second overview
 
-## 1. The 30-Second Elevator Pitch
-> *"I designed a three-tier B2B inventory and order fulfillment application using Next.js, PostgreSQL, Nginx, and Docker. Order creation uses PostgreSQL row-level locking to protect stock, and Terraform provisions an AWS environment in Mumbai with the database in private subnets. Prometheus, Grafana, and CloudWatch provide application and infrastructure monitoring."*
+> I built a three-tier inventory and order fulfillment demo using Next.js, PostgreSQL, Nginx, Docker Compose, Terraform, and AWS. Order creation uses a PostgreSQL transaction with row-level locking to prevent stock from going below zero. The repository includes a local monitoring stack and Terraform configuration for an EC2 application host and a private RDS database.
 
----
+## 2. Architecture
 
-## 2. Architecture: The 3 Tiers (Restaurant Analogy)
+| Tier | Component | What it does |
+| --- | --- | --- |
+| Edge | Nginx | Listens on port 80, applies gzip and cache headers, and proxies requests to Next.js. |
+| Application | Next.js App Router | Runs with standalone output on Node.js 20. The Docker image runs the app as the non-root **nextjs** user. API routes provide health, inventory, orders, and Prometheus metrics. |
+| Data | PostgreSQL 17 / Amazon RDS PostgreSQL 17.5 | Stores products and orders. Local Compose does not publish PostgreSQL on a host port. Terraform places RDS in a private subnet group and sets **publicly_accessible = false**. |
 
-| Tier | Component | Analogy | What it does |
-| :--- | :--- | :--- | :--- |
-| **Tier 1** | **Nginx** | **The Front Desk & Maître d'** | Single public entry point (Port 80/443). Handles Gzip compression, caches immutable Next.js static assets for 1 year, and reverse proxies requests to the kitchen. |
-| **Tier 2** | **Next.js (App Router)** | **The Kitchen** | Runs inside a private container using Next.js `standalone` output and Node 20. Serves the interactive UI dashboard and API endpoints (`/api/health`, `/api/inventory`, `/api/orders`, `/api/metrics`). Runs as a non-root system user. |
-| **Tier 3** | **PostgreSQL 17 / RDS** | **The Locked Pantry** | Stores products and transactions. The RDS subnet group spans private subnets in two Availability Zones; the database security group accepts PostgreSQL traffic from the EC2 security group. It enforces atomic inventory transactions. |
+The local Compose stack also publishes Prometheus on port 9090 and Grafana on port 3001. The application and database containers are not published on host ports. Compose uses a regular Docker bridge network; it is not marked **internal**.
 
----
+## 3. Technical stories
 
-## 3. Top 4 Technical Highlights (Stories for Interviews)
+### Story 1: Preventing inventory overselling
 
-### Story 1: Preventing Race Conditions & Overselling (The Concurrency Fix)
-- **The Problem:** When two enterprise buyers click "Purchase" on the last remaining NVIDIA H100 GPU at the exact same millisecond, a standard `SELECT stock` followed by `UPDATE stock` causes an inventory race condition where both orders succeed, creating negative inventory.
-- **My Solution:** I wrapped the transaction inside `BEGIN; ... COMMIT;` and used PostgreSQL **Row-Level Locking: `SELECT ... FOR UPDATE`**.
-- **How it works:** The first transaction locks the specific product row. Concurrent transactions must queue and wait. As soon as stock hits 0, subsequent transactions trigger an immediate `ROLLBACK;` and return a clean HTTP `409 Conflict`.
-- **Validation to perform:** Run 10 simultaneous orders against 5 available units and verify that exactly 5 succeed, the remaining orders fail, and stock reaches 0. This repository does not include a committed stress-test harness, so capture the result before describing it as a measured test.
+- **Situation:** Concurrent buyers may request the last units of the same product.
+- **Task:** Keep stock from becoming negative when requests arrive at the same time.
+- **Action:** The order route calls a database transaction that locks the product row with **SELECT ... FOR UPDATE**, checks stock, updates inventory, inserts the order, and commits. Insufficient stock returns HTTP 409. When PostgreSQL is unavailable, the application uses an in-memory fallback; that mode does not validate PostgreSQL locking.
+- **Validation:** **scripts/stress-test.ps1** sends parallel requests after checking that the health endpoint reports PostgreSQL mode. Run it only against an isolated local database: with **-ConfirmReset**, it deletes existing orders and resets inventory before the test. The default H100 seed has five units, so the default ten-request run expects five successes and five rejections. Do not describe those results as measured until you run the script and inspect its output.
 
-### Story 2: Zero-Trust Network Isolation (Security Hardening)
-- **The Problem:** In development, developers frequently expose application ports (`3000`) and database ports (`5432`) to the host, exposing internal layers to port scanning and direct attacks.
-- **My Solution:** `docker-compose.yml` exposes Nginx on port 80 while Next.js and PostgreSQL have no host port mappings and communicate over the private `app-network`. Prometheus and Grafana also publish host ports (9090 and 3001) for local monitoring, so restrict those ports when the host is reachable by untrusted machines.
+Run the local Compose stack first, then:
 
-### Story 3: Production Cloud Infrastructure with Terraform (AWS Mumbai `ap-south-1`)
-- **My Solution:** I wrote declarative Terraform code to provision:
-  1. A custom VPC (`10.0.0.0/16`) with an Internet Gateway.
-  2. A public subnet for EC2 and two private subnets across distinct Availability Zones for the RDS DB subnet group. The current configuration does not enable a Multi-AZ RDS deployment.
-  3. **Chained Security Groups:** The RDS Security Group allows port 5432 **strictly** from the EC2 Security Group ID, establishing least-privilege access.
-  4. **Amazon RDS PostgreSQL 17.5** in private subnets, with inbound PostgreSQL access limited to the EC2 security group. The current Terraform resource does not explicitly enable storage encryption or configure backup retention.
-  5. **1-Command Teardown (`terraform destroy`):** Wipes all cloud resources in 3 minutes to eliminate billing waste.
+~~~powershell
+pwsh -File scripts/stress-test.ps1 -ConfirmReset
+~~~
 
-### Story 4: Managing Memory Pressure During EC2 Builds
-- **The Problem:** Building a Next.js image on a small EC2 host can create memory pressure during compilation.
-- **My Solution:** `deploy-to-aws.ps1` creates a 2 GB swapfile on the EC2 host if one does not already exist. This adds swap capacity for the Docker build; it does not change the configured EC2 instance type or guarantee a specific build time.
+### Story 2: Standalone container build
 
----
+The Dockerfile separates dependency installation, build, and runtime stages. The runtime stage copies the Next.js standalone output and static assets, and runs as the non-root **nextjs** user. This reduces the runtime contents compared with shipping the full development tree, but this repository does not record a measured image-size comparison.
 
-## 4. Full-Stack Observability & Monitoring
+### Story 3: Network boundaries
 
-I implemented the **Two Pillars of Monitoring**:
+- In local Compose, Nginx publishes port 80; Prometheus and Grafana publish ports 9090 and 3001. The Next.js app and PostgreSQL have no host port mappings.
+- In AWS, the EC2 security group accepts HTTP on port 80. RDS is configured as not publicly accessible, and its security group accepts PostgreSQL traffic from the EC2 security group.
+- The Terraform EC2 security group currently permits SSH from **0.0.0.0/0**. Restrict that rule before deployment in a real environment.
+- Nginx listens on HTTP port 80; TLS termination is not configured in this repository. Describe the setup as basic network separation, not a complete zero-trust or production security design.
 
-```
-[ Next.js Kitchen ] ──(Exposes /api/metrics)──> [ Prometheus ] ──> [ Grafana ] (Visual TV)
-                                                        │
-[ EC2 & RDS Hypervisor ] ──────────────────────> [ AWS CloudWatch Alarms ] (Emergency Siren)
-```
+### Story 4: AWS infrastructure
 
-1. **In-App Metrics Exporter:** Built a custom Next.js endpoint (`/api/metrics`) that reports Prometheus text exposition data:
-   - `b2b_database_connected` (Gauge: 1 or 0)
-   - `b2b_database_latency_ms` (Gauge: query round-trip time)
-   - `b2b_orders_total` (Counter: success vs rejected orders)
-   - `b2b_inventory_stock` (Gauge: real-time stock per SKU)
-2. **Prometheus:** Scrapes `/api/metrics` every 5 seconds.
-3. **Grafana:** Displays visual gauges and bar charts that bounce in real time during concurrency load tests.
-4. **AWS CloudWatch Alarms:** Automated infrastructure safety net configured via Terraform (`CPUUtilization >= 80%` on EC2 or RDS trips an immediate alert).
+Terraform describes a VPC with a public subnet for EC2 and two private subnets in separate Availability Zones for the RDS subnet group. The RDS instance uses **db.t4g.micro**, is marked not publicly accessible, and is reachable through the EC2 security group. The default EC2 instance type is **t3.small**.
 
----
+The two-subnet RDS subnet group does not make the database instance Multi-AZ; the RDS resource does not enable **multi_az**. Storage encryption is also not explicitly configured. The deploy script packages the app, uploads it to EC2, seeds RDS, and starts the production Compose file after Terraform, AWS credentials, and SSH prerequisites are in place. It also configures a 2 GB swap file on the EC2 host. Avoid promising a fixed deployment or teardown time.
 
-## 5. Likely Interview Questions & Model Answers
+## 4. Monitoring
 
-### Q1: *"Why put Nginx in front of Next.js? Next.js already has its own server."*
-> **Answer:** *"Nginx gives the stack a single HTTP entry point, applies Gzip compression and long-lived cache headers to immutable Next.js assets, and forwards requests to the app container. Next.js and PostgreSQL are not published on host ports in the local Compose stack. TLS termination and DDoS protection are not configured in this repository and would need to be added at the edge before production use."*
+- The Next.js **/api/metrics** endpoint emits Prometheus text format for database connectivity and latency, order status counts, and inventory by SKU.
+- Prometheus is configured to scrape the app every five seconds.
+- Grafana is provisioned with Prometheus as a data source. Dashboard definitions are not checked into this repository.
+- The order metric is calculated from the most recent orders returned by the app, so describe it as demo monitoring rather than a lifetime order counter.
+- Terraform defines CloudWatch CPU alarms for EC2 and RDS.
 
-### Q2: *"How did you prevent database overselling under high concurrency?"*
-> **Answer:** *"I avoided optimistic locking and application-level checks, which fail under distributed horizontal scaling. Instead, I used PostgreSQL's native row-level locking using `SELECT ... FOR UPDATE` inside an atomic transaction. This guarantees that only one transaction can evaluate and decrement stock for a given SKU at a time, enforcing ACID consistency at the database engine level."*
+## 5. Likely interview questions
 
-### Q3: *"How is your database secured in AWS?"*
-> **Answer:** *"The Amazon RDS instance is placed in private subnets with no route to the Internet Gateway. Its security group allows inbound TCP 5432 only from the EC2 security group, and the application connection string requires SSL with `sslmode=require`. The EC2 SSH rule is open to all IPv4 addresses by default in this sample and should be restricted to the operator's IP before deployment."*
+### Why put Nginx in front of Next.js?
 
-### Q4: *"Why did you use Terraform instead of the AWS Management Console?"*
-> **Answer:** *"Manual configuration in the AWS console is error-prone, untracked, and dangerous for cloud budgets. With Terraform, our entire infrastructure is version-controlled, reproducible, and self-documenting. Most importantly, running `terraform destroy` ensures that every subnet, disk, and database instance is cleanly deleted when testing concludes, preventing orphaned resource costs."*
+Nginx provides one HTTP entry point, gzip compression, cache headers for immutable Next.js assets, and reverse proxying to the app. Static asset requests are still proxied to Next.js by this configuration; Nginx is not serving the files directly from its own disk.
 
-### Q5: *"What is the difference between a Gauge and a Counter in Prometheus?"*
-> **Answer:** *"A Counter is a cumulative metric that only ever increases—like total orders processed (`b2b_orders_total`). A Gauge represents a numerical value that can go up or down arbitrarily—like available inventory stock (`b2b_inventory_stock`) or database latency (`b2b_database_latency_ms`)."*
+### How does order creation prevent overselling?
 
----
+The PostgreSQL path begins a transaction and locks the selected product row with **SELECT ... FOR UPDATE**. It checks the locked stock value before updating it and creating the order. A request that cannot be fulfilled is rolled back and receives HTTP 409. The in-memory fallback uses a JavaScript lock queue and should not be presented as a PostgreSQL concurrency test.
 
-## 6. Quick Tech Stack Summary
+### How is the AWS database isolated?
 
-- **Frontend & App Server:** Next.js 16 (App Router, Turbopack, Tailwind CSS v4, Node 20 Standalone).
-- **Edge & Proxy:** Nginx (Alpine), Gzip, Static Cache-Control.
-- **Database:** PostgreSQL 17 locally and Amazon RDS PostgreSQL 17.5 in AWS (subnet group spans two Availability Zones; Multi-AZ deployment and explicit storage encryption are not enabled in the current Terraform configuration).
-- **Containerization:** Docker, Docker Compose, Multi-stage Dockerfiles.
-- **Infrastructure as Code:** Terraform (AWS Provider v5).
-- **Cloud Provider:** AWS (VPC, public/private subnets, security groups, EC2 `t3.small` by default, RDS `db.t4g.micro`, CloudWatch).
-- **Observability:** Prometheus, Grafana, AWS CloudWatch Metric Alarms.
+The RDS instance is configured as not publicly accessible, uses a subnet group spanning two private subnets, and accepts inbound port 5432 only from the EC2 security group. The current Terraform does not enable Multi-AZ or explicitly configure storage encryption. The EC2 SSH ingress rule is open to all IPv4 addresses and should be restricted.
 
+The production Compose file sets **PGSSLMODE=require** and also sets **NODE_TLS_REJECT_UNAUTHORIZED=0**, which disables Node.js certificate verification. Do not claim that the deployment validates the RDS server certificate; remove that override and configure the appropriate CA trust before relying on certificate validation.
+
+### Why use Terraform?
+
+Terraform makes the declared AWS resources reviewable and repeatable. Its state tracks the resources it manages, and **terraform destroy** can remove those managed resources when they are no longer needed. Confirm the target workspace and state before applying or destroying infrastructure.
+
+### What is the difference between a Prometheus gauge and a counter?
+
+A gauge can rise or fall, such as current inventory. A counter is intended to be cumulative. In this demo, the order metric is derived from the recent order list, so it is not a durable lifetime counter.
+
+## 6. Technology summary
+
+- Next.js 16 App Router, React 19, TypeScript, Node.js 20
+- Nginx with gzip and cache headers
+- PostgreSQL 17 locally and Amazon RDS PostgreSQL 17.5
+- Docker and Docker Compose
+- Terraform with AWS VPC, EC2, RDS, security groups, and CloudWatch alarms
+- Prometheus and Grafana
+- PowerShell 7 stress-test script for local PostgreSQL concurrency checks
