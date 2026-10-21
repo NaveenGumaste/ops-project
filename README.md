@@ -29,6 +29,12 @@ From the repository root:
 
 ```powershell
 Copy-Item .env.example .env
+notepad .env
+```
+
+Set unique values for `POSTGRES_PASSWORD` and `GRAFANA_ADMIN_PASSWORD` in `.env` before starting the stack. Use long random alphanumeric values and keep `.env` private. Then start the services:
+
+```powershell
 docker compose up --build -d
 docker compose ps
 ```
@@ -39,13 +45,13 @@ Local service URLs:
 
 - App: <http://localhost>
 - Prometheus: <http://localhost:9090>
-- Grafana: <http://localhost:3001> (local default login: `admin` / `admin`)
+- Grafana: <http://localhost:3001> (username: `admin`; use the value of `GRAFANA_ADMIN_PASSWORD`)
 - Health API: <http://localhost/api/health>
 - Inventory API: <http://localhost/api/inventory>
 - Orders API: <http://localhost/api/orders>
 - Prometheus metrics: <http://localhost/api/metrics>
 
-Compose supplies the app container with a PostgreSQL connection string using `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` from `.env`. Change the local defaults in `.env` if other people or machines can reach these services. Grafana's default credentials are for local use only.
+Compose supplies the app container with a PostgreSQL connection string using `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` from `.env`. The Compose file requires both passwords instead of using known defaults. Keep `.env` private.
 
 To follow app logs or stop the stack:
 
@@ -87,8 +93,9 @@ npm run start
 | --- | --- | --- |
 | `DATABASE_URL` | Next.js | PostgreSQL connection string. Compose builds the local container's value from the `POSTGRES_*` settings. |
 | `POSTGRES_USER` | Local Compose | Local PostgreSQL username (defaults to `postgres`). |
-| `POSTGRES_PASSWORD` | Local Compose | Local PostgreSQL password (defaults to `postgres`). |
+| `POSTGRES_PASSWORD` | Local Compose | Required local PostgreSQL password; set it in `.env`. |
 | `POSTGRES_DB` | Local Compose | Local database name (defaults to `inventory_db`). |
+| `GRAFANA_ADMIN_PASSWORD` | Local Compose | Required password for the local Grafana admin account. |
 | `aws_region` | Terraform | AWS region; defaults to `ap-south-1`. |
 | `db_username` | Terraform | RDS master username. |
 | `db_password` | Terraform | Required sensitive RDS master password; provide it in an ignored local `terraform.tfvars` file. |
