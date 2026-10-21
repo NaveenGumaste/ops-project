@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 5s # How often Prometheus collects metrics
+  evaluation_interval: 5s # How often rules are evaluated
+
+scrape_configs:
+  # Job 1: Monitor our 3-tier Next.js Application
+  - job_name: "b2b-nextjs-app"
+    metrics_path: "/api/metrics"
+    static_configs:
+      - targets: ["web:3000"]
+        labels:
+          tier: "tier2-kitchen"
+          environment: "local"
